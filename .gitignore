@@ -8,8 +8,5 @@ _build/
 deps/
 .elixir_ls/
 
-# Session transcripts (large)
-session-transcript-*.jsonl
-
 # OS
 .DS_Store
