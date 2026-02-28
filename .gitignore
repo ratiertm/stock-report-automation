@@ -8,9 +8,6 @@ _build/
 deps/
 .elixir_ls/
 
-# PDF sample files (large binaries)
-*.pdf
-
 # Session transcripts (large)
 session-transcript-*.jsonl
 
