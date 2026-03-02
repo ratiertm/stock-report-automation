@@ -48,10 +48,17 @@ def watchlist_remove(req: TickerRequest, db: Session = Depends(get_db)):
 # --- POST /api/fetch/{ticker} ---
 
 @router.post("/fetch/{ticker}")
-async def fetch_single(ticker: str, source: str = "CFRA"):
+async def fetch_single(ticker: str, source: str = "CFRA", db: Session = Depends(get_db)):
     result = await fetch_pdf(ticker, source.upper(), settings.pdf_storage_path)
     if result["status"] == "error":
         raise HTTPException(422, result["error"])
+    # Auto-parse and store to DB
+    try:
+        parse_result = parse_and_store(result["pdf_path"], source.upper(), db)
+        result["parse_status"] = parse_result.get("status")
+        result["records_saved"] = parse_result.get("records_saved")
+    except Exception as e:
+        result["parse_error"] = str(e)
     return result
 
 

@@ -17,6 +17,7 @@ def to_content_vars(session: Session, ticker: str) -> Optional[dict]:
     """
     profile = session.execute(
         select(StockProfile).where(StockProfile.ticker == ticker.upper())
+        .order_by(StockProfile.id.desc()).limit(1)
     ).scalar_one_or_none()
     if not profile:
         return None
@@ -146,6 +147,7 @@ def detect_changes(session: Session, ticker: str) -> Optional[dict]:
     """
     profile = session.execute(
         select(StockProfile).where(StockProfile.ticker == ticker.upper())
+        .order_by(StockProfile.id.desc()).limit(1)
     ).scalar_one_or_none()
     if not profile:
         return None

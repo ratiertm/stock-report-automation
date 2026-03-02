@@ -318,6 +318,8 @@ def save_analyst_notes(session: Session, profile_id: int, source: str, notes: li
 def get_profile_by_ticker(session: Session, ticker: str) -> Optional[StockProfile]:
     return session.execute(
         select(StockProfile).where(StockProfile.ticker == ticker.upper())
+        .order_by(StockProfile.id.desc())
+        .limit(1)
     ).scalar_one_or_none()
 
 
