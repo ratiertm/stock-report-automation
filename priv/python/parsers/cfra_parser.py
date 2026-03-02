@@ -104,35 +104,13 @@ class CFRAFinancial:
 
 
 @dataclass
-class CFRABalanceSheet:
-    """Maps to stock_balance_sheets table."""
-    fiscal_year: int = 0
-    cash: Optional[str] = None
-    current_assets: Optional[str] = None
-    total_assets: Optional[str] = None
-    current_liabilities: Optional[str] = None
-    long_term_debt: Optional[str] = None
-    total_capital: Optional[str] = None
-    capital_expenditures: Optional[str] = None
-    cash_from_operations: Optional[str] = None
-    current_ratio: Optional[str] = None
-    ltd_to_cap_pct: Optional[str] = None
-    net_income_to_revenue_pct: Optional[str] = None
-    return_on_assets_pct: Optional[str] = None
-    return_on_equity_pct: Optional[str] = None
-
-
-@dataclass
 class CFRAAnalystNote:
     """Maps to stock_analyst_notes table."""
     source: str = "CFRA"
     published_at: Optional[str] = None
     analyst_name: Optional[str] = None
-    title: Optional[str] = None
-    action: Optional[str] = None
-    stock_price_at_note: Optional[str] = None
-    target_price: Optional[str] = None
     content: Optional[str] = None
+    stock_price_at_note: Optional[str] = None
 
 
 @dataclass
@@ -142,7 +120,6 @@ class CFRAParseResult:
     report: CFRAReport = field(default_factory=CFRAReport)
     key_stats: CFRAKeyStats = field(default_factory=CFRAKeyStats)
     financials: List[CFRAFinancial] = field(default_factory=list)
-    balance_sheets: List[CFRABalanceSheet] = field(default_factory=list)
     analyst_notes: List[CFRAAnalystNote] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
@@ -169,7 +146,6 @@ class CFRAParser:
                 self._parse_risk_assessment(full_text, result)
                 self._parse_text_sections(full_text, result)
                 self._parse_revenue_eps(full_text, result)
-                self._parse_balance_sheet(full_text, result)
                 self._parse_analyst_notes(full_text, result)
 
         except Exception as e:
@@ -254,22 +230,15 @@ class CFRAParser:
             if 'Sub-Industry' in line:
                 # "Sub-Industry Application Software"
                 # But JPM: "Sub-Industry Diversified Banks in assets & operations..."
-                m = re.search(r'Sub-Industry\s+(.+?)(?:\s+Summary\s+|\s+in\s+|\s+and\s+|\s{3,}|$)', line)
+                m = re.search(r'Sub-Industry\s+(.+?)(?:\s+in\s+|\s+and\s+|\s{3,}|$)', line)
                 if m:
                     sub = m.group(1).strip()
-                    # Remove trailing words that are part of Summary text overflow.
-                    # GICS sub-industry names use Title Case; lowercase words = summary bleed.
+                    # Remove trailing words that are part of Summary text
+                    # Known clean values end at 2-3 words
                     words = sub.split()
-                    clean_words = []
-                    for w in words:
-                        # Keep Title Case words and connectors; stop at lowercase/punctuated words
-                        if w[0].isupper() or w in ('&', 'and', 'of', 'the'):
-                            clean_words.append(w)
-                        else:
-                            break
-                    sub = " ".join(clean_words).rstrip(',.')
-                    if not sub and words:
-                        sub = words[0]  # fallback: at least first word
+                    if len(words) > 4:
+                        # Likely text overflow — take first 2-3 words
+                        sub = " ".join(words[:3])
                     result.profile.gics_sub_industry = sub
                 break
 
@@ -487,11 +456,10 @@ class CFRAParser:
         lines = text.split("\n")
 
         # --- Highlights + Investment Rationale (Page 1 area) ---
-        # CFRA page 1 has two columns (Highlights left, Rationale right) that
-        # pdfplumber merges into single lines. We collect all content together,
-        # then split on the first bullet that clearly belongs to rationale.
-        section_lines = []
+        highlights_lines = []
+        rationale_lines = []
         in_hl_section = False
+        in_rationale = False
 
         for i, line in enumerate(lines):
             if "Highlights" in line and "Investment Rationale" in line:
@@ -513,31 +481,22 @@ class CFRAParser:
                 if any(kw in cleaned for kw in ["Source: CFRA", "Past performance",
                                                  "Analysis prepared", "where a different currency"]):
                     continue
-                section_lines.append(cleaned)
 
-        if section_lines:
-            # Try to split highlights from rationale by finding the first
-            # standalone rationale bullet (starts with 'u' + rationale keyword)
-            # that is NOT merged with a highlights bullet on the same line.
-            rationale_keywords = ["reiterate", "our strong buy", "our buy", "our hold",
-                                  "our sell", "strong buy view", "buy view", "hold view"]
-            split_idx = None
-            for idx, line in enumerate(section_lines):
-                # Only split on lines that start with a rationale bullet and
-                # do NOT also contain a highlight bullet (merged column indicator)
-                if line.startswith("u") and any(kw in line.lower() for kw in rationale_keywords):
-                    # Check for merged columns: two 'u' bullets on one line
-                    u_count = len(re.findall(r'\bu[A-Z]', line))
-                    if u_count <= 1:
-                        split_idx = idx
-                        break
+                # Detect highlights vs rationale split
+                # Lines starting with 'u' (bullet marker) that mention ratings/reiterate → rationale
+                if cleaned.startswith("u") and any(kw in cleaned.lower() for kw in
+                        ["reiterate", "rating", "risk", "we believe", "that said"]):
+                    in_rationale = True
 
-            if split_idx is not None and split_idx > 0:
-                result.report.highlights = "\n".join(section_lines[:split_idx])
-                result.report.investment_rationale = "\n".join(section_lines[split_idx:])
-            else:
-                # Can't cleanly split — put everything in highlights
-                result.report.highlights = "\n".join(section_lines)
+                if in_rationale:
+                    rationale_lines.append(cleaned)
+                else:
+                    highlights_lines.append(cleaned)
+
+        if highlights_lines:
+            result.report.highlights = "\n".join(highlights_lines)
+        if rationale_lines:
+            result.report.investment_rationale = "\n".join(rationale_lines)
 
         # --- Business Summary (Page 2-3 area) ---
         bs_content = []
@@ -619,21 +578,16 @@ class CFRAParser:
         if rev_match:
             self._parse_financial_table(rev_match.group(1), "revenue", result)
 
-        # EPS section — header uses (USD) parentheses, not [USD] brackets
+        # EPS section
         eps_match = re.search(
-            r'Earnings Per Share [\[\(]USD[\]\)]\n(.*?)(?:Fiscal Year|Dividend Data|Key Stock|\Z)',
+            r'Earnings Per Share \[USD\]\n(.*?)(?:Fiscal Year|Dividend Data|Key Stock|\Z)',
             text, re.DOTALL
         )
         if eps_match:
             self._parse_financial_table(eps_match.group(1), "eps", result)
 
     def _parse_financial_table(self, section_text: str, metric: str, result: CFRAParseResult):
-        """Parse a CFRA financial data table (Revenue or EPS).
-
-        Handles interleaved columns where year+data may appear mid-line:
-        '...solid large deal 2027 E 0.37 E 0.39 E 0.41 E 0.44'
-        Or at line start: '2027 E 2,276 E 2,402 E 2,684 E 2,974 E 10,336'
-        """
+        """Parse a CFRA financial data table (Revenue or EPS)."""
         lines = section_text.strip().split("\n")
 
         # Skip header line "1Q 2Q 3Q 4Q Year"
@@ -643,9 +597,9 @@ class CFRAParser:
                line.startswith("Past performance") or line.startswith("Analysis prepared"):
                 continue
 
-            # Search for year anywhere in line (handles interleaved columns)
-            # Require year followed by either "E" marker or a number
-            m = re.search(r'(20\d{2})\s+(E\s+[\d.,-]+.*|[\d.,-]+.*)', line)
+            # Pattern: "2027 E 2,276 E 2,402 E 2,684 E 2,974 E 10,336"
+            # Or: "2025 884 1,004 1,181 1,407 4,475"
+            m = re.match(r'(\d{4})\s+(.*)', line)
             if not m:
                 continue
 
@@ -697,234 +651,9 @@ class CFRAParser:
                     setattr(fin, metric, val)
                     result.financials.append(fin)
 
-    # Label → field mapping for Balance Sheet rows
-    BS_LABEL_MAP = {
-        "Cash": "cash",
-        "Current Assets": "current_assets",
-        "Total Assets": "total_assets",
-        "Current Liabilities": "current_liabilities",
-        "Long Term Debt": "long_term_debt",
-        "Total Capital": "total_capital",
-        "Capital Expenditures": "capital_expenditures",
-        "Cash from Operations": "cash_from_operations",
-        "Current Ratio": "current_ratio",
-        "% Long Term Debt of Capitalization": "ltd_to_cap_pct",
-        "% Net Income of Revenue": "net_income_to_revenue_pct",
-        "% Return on Assets": "return_on_assets_pct",
-        "% Return on Equity": "return_on_equity_pct",
-    }
-
-    def _parse_balance_sheet(self, text: str, result: CFRAParseResult):
-        """Parse Balance Sheet and related financial data (10 years).
-
-        CFRA layout:
-        - "Per Share Data (USD) 2025 2024 2023 ..." → year header
-        - "Balance Sheet and Other Financial Data (Million USD)" → section start
-        - 13 rows of data (Cash, Current Assets, ..., % Return on Equity)
-        """
-        lines = text.split("\n")
-
-        # Step 1: Extract year array from "Per Share Data" header
-        years = []
-        for line in lines:
-            if "Per Share Data" in line and "USD" in line:
-                year_matches = re.findall(r'\b(20\d{2}|19\d{2})\b', line)
-                years = [int(y) for y in year_matches]
-                break
-
-        if not years:
-            return
-
-        # Step 2: Find "Balance Sheet and Other Financial Data" section
-        bs_start = None
-        for i, line in enumerate(lines):
-            if "Balance Sheet and Other Financial Data" in line:
-                bs_start = i + 1
-                break
-
-        if bs_start is None:
-            return
-
-        # Step 3: Initialize balance sheet dicts keyed by year
-        bs_data = {y: {"fiscal_year": y} for y in years}
-
-        # Step 4: Parse each data row
-        for line in lines[bs_start:]:
-            # Stop at boilerplate
-            if line.startswith("Source:") or "S&P Global Market Intelligence" in line:
-                break
-
-            # Try to match each known label
-            matched_field = None
-            for label, field_name in self.BS_LABEL_MAP.items():
-                if line.strip().startswith(label):
-                    matched_field = field_name
-                    # Remove label from line to get values
-                    rest = line.strip()[len(label):].strip()
-                    break
-
-            if not matched_field:
-                continue
-
-            # Parse values (handles: "94,565", "996.00", "N/A", "NM", "-297.00")
-            tokens = rest.split()
-            values = []
-            for token in tokens:
-                val = safe_decimal(token)
-                values.append(val)
-
-            # Map values to years (left to right = most recent to oldest)
-            for j, year in enumerate(years):
-                if j < len(values):
-                    bs_data[year][matched_field] = values[j]
-
-        # Step 5: Create CFRABalanceSheet objects
-        for year in years:
-            data = bs_data[year]
-            # Only add if at least one field has data
-            has_data = any(v is not None for k, v in data.items() if k != "fiscal_year")
-            if has_data:
-                bs = CFRABalanceSheet(**data)
-                result.balance_sheets.append(bs)
-
-    # Action keywords for Analyst Notes classification
-    ACTION_KEYWORDS = {
-        "Maintains": "maintain",
-        "Retains": "maintain",
-        "Reiterates": "reiterate",
-        "Raises": "upgrade",
-        "Upgrades": "upgrade",
-        "Lowers": "downgrade",
-        "Downgrades": "downgrade",
-        "Initiates": "initiate",
-        "Resumes": "initiate",
-    }
-
     def _parse_analyst_notes(self, text: str, result: CFRAParseResult):
-        """Parse Analyst Research Notes section with full detail extraction.
-
-        Each note has: date, timestamp, title (with action verb), ticker+price,
-        body content, and analyst signature.
-        """
-        lines = text.split("\n")
-
-        # Find "Analyst Research Notes" section
-        an_start = None
-        for i, line in enumerate(lines):
-            if "Analyst" in line and "Research" in line and "Notes" in line:
-                an_start = i + 1
-                break
-
-        if an_start is None:
-            return
-
-        # Collect section text until end markers
-        section_lines = []
-        for line in lines[an_start:]:
-            if line.startswith("Redistribution or") or line.startswith("Copyright"):
-                break
-            section_lines.append(line)
-
-        section_text = "\n".join(section_lines)
-
-        # Split into individual notes by timestamp pattern
-        # Pattern: "HH:MM AM ET..." or "HH:MM PM ET..."
-        note_splits = re.split(r'(\d{2}:\d{2}\s+[AP]M\s+ET\.\.\.)', section_text)
-
-        # Collect dates that appear before timestamps
-        # Dates appear on their own or mixed lines: "January 29, 2026"
-        date_pattern = re.compile(
-            r'(January|February|March|April|May|June|July|August|September|October|November|December)'
-            r'\s+\d{1,2},\s+\d{4}'
-        )
-
-        # Track current dates (two-column layout means two dates per line)
-        current_dates = []
-        date_idx = 0
-
-        # Find all dates in the section in order
-        all_dates = []
-        for m in date_pattern.finditer(section_text):
-            all_dates.append(m.group(0))
-
-        # Process note_splits: [pre, timestamp1, content1, timestamp2, content2, ...]
-        notes = []
-        for idx in range(1, len(note_splits) - 1, 2):
-            timestamp = note_splits[idx].strip()  # "06:05 AM ET..."
-            content_block = note_splits[idx + 1] if idx + 1 < len(note_splits) else ""
-
-            # Build published_at from nearest preceding date + timestamp
-            time_part = timestamp.replace("ET...", "").strip()
-            if date_idx < len(all_dates):
-                published_at = f"{all_dates[date_idx]} {time_part}"
-            else:
-                published_at = time_part
-            date_idx += 1
-
-            # Extract title: from "CFRA Maintains..." or "TICKER: ..." to ticker+price pattern
-            title = None
-            action = None
-            stock_price = None
-            target_price = None
-            analyst_name = None
-
-            # Title is typically the first sentence up to the ticker+price pattern
-            title_match = re.match(
-                r'(.+?)\((\w+)\s+([\d.,]+)\*+\)',
-                content_block.replace("\n", " ")
-            )
-            if title_match:
-                title = title_match.group(1).strip().rstrip(":").strip()
-                stock_price = safe_decimal(title_match.group(3))
-
-            # Detect action from title
-            if title:
-                for keyword, action_val in self.ACTION_KEYWORDS.items():
-                    if keyword in title:
-                        action = action_val
-                        break
-
-            # Extract target price from content: "target to $550", "target price to $340"
-            tp_match = re.search(
-                r'target\s+(?:price\s+)?(?:to|at|of)\s+\$([\d.,]+)',
-                content_block, re.IGNORECASE
-            )
-            if tp_match:
-                target_price = safe_decimal(tp_match.group(1))
-
-            # Extract analyst name: "/ Angelo Zino, CFA" or "/ Sel Hardy"
-            analyst_match = re.search(r'/\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+(?:,\s*CFA)?)', content_block)
-            if analyst_match:
-                analyst_name = analyst_match.group(1).strip()
-
-            # Content: everything between title line and signature
-            content_text = content_block.strip()
-            # Remove the title portion (up to ticker+price)
-            if title_match:
-                content_text = content_block[title_match.end():].strip()
-                # Remove leading colon if present
-                content_text = content_text.lstrip(":").strip()
-            # Remove trailing signature
-            if analyst_match:
-                sig_start = content_text.rfind("/ " + analyst_name.split(",")[0])
-                if sig_start > 0:
-                    content_text = content_text[:sig_start].strip()
-
-            note = CFRAAnalystNote(
-                published_at=published_at,
-                analyst_name=analyst_name,
-                title=title,
-                action=action,
-                stock_price_at_note=stock_price,
-                target_price=target_price,
-                content=content_text if len(content_text) > 10 else None,
-            )
-            notes.append(note)
-
-        result.analyst_notes = notes
-
-    def _parse_analyst_notes_legacy(self, text: str, result: CFRAParseResult):
-        """Legacy: extract basic analyst info from 'Analysis prepared by' line."""
+        """Parse Analyst Notes section (time series of research notes)."""
+        # Pattern: "Analysis prepared by Janice Quek on Feb 03, 2026 09:31 AM ET, when the stock traded at USD 147.76."
         pattern = r'Analysis prepared by (.+?) on (.+?),\s*when the stock traded at USD ([\d.,]+)'
         for m in re.finditer(pattern, text):
             note = CFRAAnalystNote(
@@ -944,7 +673,6 @@ def parse_cfra(filepath: str) -> dict:
         "report": asdict(result.report),
         "key_stats": asdict(result.key_stats),
         "financials": [asdict(f) for f in result.financials],
-        "balance_sheets": [asdict(b) for b in result.balance_sheets],
         "analyst_notes": [asdict(n) for n in result.analyst_notes],
         "errors": result.errors,
         "warnings": result.warnings,

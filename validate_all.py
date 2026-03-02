@@ -5,7 +5,7 @@ import json
 from cfra_parser import parse_cfra
 from zacks_parser import parse_zacks
 
-PDF_DIR = "mnt/Projects/active/Stock_report_automation"
+PDF_DIR = "."
 
 # === Ground Truth (manually verified from PDFs) ===
 

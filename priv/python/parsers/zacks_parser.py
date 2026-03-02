@@ -136,18 +136,8 @@ class ZacksParser:
                 self._parse_header(page1, result)
                 self._parse_rank_and_scores(page1, result)
                 self._parse_text_sections(full_text, result)
-                self._parse_financials(page1, result)
                 self._parse_valuation_data(full_text, result)
                 self._parse_industry_comparison(pages_text, pdf, result)
-
-                # Derive rank from recommendation for peers missing rank
-                rank_map = {
-                    "Strong Buy": 1, "Outperform": 2, "Neutral": 3,
-                    "Underperform": 4, "Strong Sell": 5,
-                }
-                for peer in result.peers:
-                    if peer.rank is None and peer.recommendation:
-                        peer.rank = rank_map.get(peer.recommendation)
 
         except Exception as e:
             result.errors.append(f"Fatal: {str(e)}")
@@ -235,13 +225,13 @@ class ZacksParser:
         Key: Section headers are followed by ":" and newline.
         """
         # --- Reasons To Buy (page 3 area) ---
-        m = re.search(r'Reasons To Buy:\s*\n(.*?)(?=Reasons To Sell:|Risks\n|\Z)',
+        m = re.search(r'Reasons To Buy:\s*\n(.*?)(?=Reasons To Sell:|\Z)',
                        text, re.DOTALL)
         if m:
             result.report.reasons_to_buy = self._clean_section(m.group(1))
 
-        # --- Reasons To Sell / Risks (page 4 area) ---
-        m = re.search(r'(?:Reasons To Sell:|Risks)\s*\n(.*?)(?=Last Earnings|Recent News|Outlook|\w+\'s Outlook|\Z)',
+        # --- Reasons To Sell (page 4 area) ---
+        m = re.search(r'Reasons To Sell:\s*\n(.*?)(?=Last Earnings|Recent News|Outlook|\w+\'s Outlook|\Z)',
                        text, re.DOTALL)
         if m:
             result.report.reasons_to_sell = self._clean_section(m.group(1))
@@ -278,121 +268,17 @@ class ZacksParser:
         if summary_lines:
             result.report.business_summary = "\n".join(summary_lines)
 
-    def _parse_financials(self, page1_text: str, result: ZacksParseResult):
-        """Parse Sales Estimates and EPS Estimates tables from page 1.
-
-        Headers may be interleaved with left-column data:
-        'Last EPS Surprise 6.6% Sales Estimates (millions of $) (1)'
-        'P/E TTM 38.7 Q1 Q2 Q3 Q4 Annual*'
-        So we match Q1..Q4..Annual anywhere in a line, not just at line start.
-        """
-        # Sales Estimates section: from "Sales Estimates" to "EPS Estimates"
-        sales_match = re.search(
-            r'Sales Estimates.*?Q1\s+Q2\s+Q3\s+Q4\s+Annual\*?\s*\n(.*?)(?=EPS Estimates|\Z)',
-            page1_text, re.DOTALL
-        )
-        if sales_match:
-            self._parse_zacks_table(sales_match.group(1), "revenue", result)
-
-        # EPS Estimates section: from "EPS Estimates" to end-of-table markers
-        eps_match = re.search(
-            r'EPS Estimates.*?Q1\s+Q2\s+Q3\s+Q4\s+Annual\*?\s*\n(.*?)(?=\*Quarterly|©|\Z)',
-            page1_text, re.DOTALL
-        )
-        if eps_match:
-            self._parse_zacks_table(eps_match.group(1), "eps", result)
-
-    def _parse_zacks_table(self, section_text: str, metric: str, result: ZacksParseResult):
-        """Parse a Zacks financial table row.
-
-        Handles interleaved columns where year data may appear mid-line:
-        'EPS F1 Est- 4 week change 4.0% 2028 98,250 E 102,300 E ...'
-        'P/E F1 25.0 2028 2.17 E 2.25 E ...'
-        Or clean: '2026 44,062 A 46,743 A 57,006 A 68,127 A 215,938 A'
-        """
-        for line in section_text.strip().split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            # Search for year (20XX) anywhere in the line, followed by financial data
-            m = re.search(r'(20\d{2})\s+([\d.,]+\s*[EA](?:\s|$).*)', line)
-            if not m:
-                continue
-            year = int(m.group(1))
-            rest = m.group(2)
-
-            # Extract values: number followed by E/A marker
-            vals = re.findall(r'([\d.,]+)\s*([EA])', rest)
-            if not vals:
-                continue
-
-            if len(vals) >= 4:
-                # Full row: 4 quarters + optional annual
-                quarters = vals[:4]
-                annual = vals[4] if len(vals) >= 5 else None
-
-                for qi, (val, marker) in enumerate(quarters, start=1):
-                    is_est = (marker == 'E')
-                    val_clean = val.replace(",", "")
-                    fin = ZacksFinancial(
-                        fiscal_year=year,
-                        fiscal_quarter=qi,
-                        period_type="quarterly",
-                        is_estimate=is_est,
-                    )
-                    if metric == "revenue":
-                        fin.revenue = val_clean
-                    else:
-                        fin.eps = val_clean
-                    result.financials.append(fin)
-
-                if annual:
-                    val_clean = annual[0].replace(",", "")
-                    is_est = (annual[1] == 'E')
-                    fin = ZacksFinancial(
-                        fiscal_year=year,
-                        fiscal_quarter=None,
-                        period_type="annual",
-                        is_estimate=is_est,
-                    )
-                    if metric == "revenue":
-                        fin.revenue = val_clean
-                    else:
-                        fin.eps = val_clean
-                    result.financials.append(fin)
-            elif len(vals) == 1:
-                # Annual-only row (e.g., DHR 2027 with only annual estimate)
-                val_clean = vals[0][0].replace(",", "")
-                is_est = (vals[0][1] == 'E')
-                fin = ZacksFinancial(
-                    fiscal_year=year,
-                    fiscal_quarter=None,
-                    period_type="annual",
-                    is_estimate=is_est,
-                )
-                if metric == "revenue":
-                    fin.revenue = val_clean
-                else:
-                    fin.eps = val_clean
-                result.financials.append(fin)
-
     def _parse_valuation_data(self, text: str, result: ZacksParseResult):
         """Parse Zacks valuation metrics."""
         ks = result.key_stats
-
-        # 52 Week High-Low
-        m = re.search(r'52 Week High-Low.*?\$([\d.,]+)\s*-\s*\$([\d.,]+)', text)
-        if m:
-            ks.week_52_high = safe_decimal(m.group(1))
-            ks.week_52_low = safe_decimal(m.group(2))
 
         # Forward P/E
         m = re.search(r'P/E\s*\(F1\).*?([\d.,]+)', text)
         if m:
             ks.pe_forward_12m = safe_decimal(m.group(1))
 
-        # PEG — anchor to "PEG" followed by optional "Ratio" or "F1" label
-        m = re.search(r'PEG\s+(?:Ratio\s+|F1\s+)?([\d.,]+)', text)
+        # PEG
+        m = re.search(r'PEG.*?([\d.,]+)', text)
         if m:
             ks.peg_ratio = safe_decimal(m.group(1))
 

@@ -10,3 +10,12 @@ deps/
 
 # OS
 .DS_Store
+
+# Environment
+.env
+
+# Storage (downloaded PDFs)
+storage/
+
+# bkit plugin memory
+.bkit-memory.json

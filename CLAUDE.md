@@ -25,11 +25,12 @@ Elixir SaaS MVP의 `market/` 모듈 하위에 통합 예정.
 | 레이어 | 기술 | 용도 |
 |--------|------|------|
 | 데이터 수집 (Phase 1) | Chrome MCP (Claude Desktop) | 포털 브라우저 자동화 |
-| 데이터 수집 (Phase 3) | Python Playwright (headless) | 서버 자동 수집 |
-| PDF 파싱 | Python pdfplumber + tabula-py | 텍스트/테이블 추출 |
-| DB | PostgreSQL + Ecto | 정규화 저장 |
-| 백엔드 | Elixir/Phoenix | 컨텍스트, API, Oban |
-| 스케줄링 | Oban Cron | 정기 수집/파싱 |
+| 데이터 수집 (Phase 3) | Python Playwright (headless) | 서버 자동 수집 (예정) |
+| PDF 파싱 | Python pdfplumber | 텍스트/테이블 추출 |
+| ORM | SQLAlchemy 2.0 + Alembic | 모델 정의, 마이그레이션 |
+| DB | PostgreSQL | 정규화 저장 (7 테이블) |
+| 설정 | pydantic-settings | .env 기반 환경 설정 |
+| 상위 프로젝트 (예정) | Elixir/Phoenix | 컨텍스트, API, Oban 통합 |
 
 ---
 
@@ -84,27 +85,48 @@ stock_reports  (1) ──< (1) stock_key_stats
 
 ---
 
-## 모듈 구조
+## 모듈 구조 (Python)
 
 ```
-lib/app_name/market/
-├── stock_profile.ex           # Ecto 스키마: 종목 기본정보
-├── stock_report.ex            # Ecto 스키마: 리포트 메타
-├── stock_financial.ex         # Ecto 스키마: 재무 데이터
-├── stock_balance_sheet.ex     # Ecto 스키마: 대차대조표
-├── stock_key_stat.ex          # Ecto 스키마: 핵심 통계
-├── stock_peer.ex              # Ecto 스키마: 피어 비교
-├── stock_analyst_note.ex      # Ecto 스키마: 애널리스트 노트
-├── stock_reports.ex           # 컨텍스트 (비즈니스 로직, 조회, 콘텐츠 변환)
-├── stock_report_fetcher.ex    # 데이터 수집 오케스트레이터
-├── stock_report_parser.ex     # PDF → 구조화 데이터 (소스별 위임)
+app/
+├── __init__.py
+├── main.py                        # ★ FastAPI 앱 엔트리포인트
+├── config.py                      # pydantic-settings (DATABASE_URL, PDF_STORAGE_PATH 등)
+├── database.py                    # SQLAlchemy engine, SessionLocal, Base
+├── models/                        # SQLAlchemy ORM 모델 (10 테이블)
+│   ├── __init__.py                # 전체 모델 re-export
+│   ├── stock_profile.py           # 종목 기본정보
+│   ├── stock_report.py            # 리포트 메타 (zacks_rank_label 포함)
+│   ├── stock_financial.py         # 분기/연간 재무 데이터
+│   ├── stock_balance_sheet.py     # 대차대조표
+│   ├── stock_key_stat.py          # 핵심 통계 (quality_ranking, oper_eps 포함)
+│   ├── stock_peer.py              # 피어 그룹 비교
+│   ├── stock_analyst_note.py      # 애널리스트 리서치 노트
+│   ├── watchlist.py               # Watchlist + WatchlistItem
+│   └── alert.py                   # Alert (변경 알림 로그)
+├── schemas/
+│   └── stock.py                   # ★ Pydantic 응답 스키마
+├── api/
+│   ├── stocks.py                  # ★ REST API 라우터 (7개 엔드포인트)
+│   ├── watchlist.py               # ★ Watchlist + Fetch API (6개 엔드포인트)
+│   └── content.py                 # ★ Content + Alert API (5개 엔드포인트)
+├── crud/
+│   ├── stock.py                   # UPSERT 로직 (upsert_profile, upsert_report, ...)
+│   └── watchlist.py               # Watchlist CRUD (add/remove/list/fetch_targets)
 ├── parsers/
-│   ├── cfra_parser.ex         # CFRA 포맷 전용 파서
-│   └── zacks_parser.ex        # Zacks 포맷 전용 파서
-└── workers/
-    ├── report_fetch_worker.ex     # Oban: PDF 다운로드
-    ├── report_parse_worker.ex     # Oban: PDF 파싱 + DB 저장
-    └── report_schedule_worker.ex  # Oban: 정기 수집 (매일 7AM)
+│   └── __init__.py                # CFRAParser, ZacksParser re-export
+└── services/
+    ├── parser_service.py          # parse_and_store(): PDF 파싱 → DB 저장 오케스트레이터
+    ├── fetcher_service.py         # Playwright PDF 다운로드 (fetch_pdf, batch_fetch)
+    ├── scheduler.py               # APScheduler 정기 수집 (daily_fetch_job)
+    ├── content_service.py         # 콘텐츠 변수 맵 + 변경 감지 (to_content_vars, detect_changes)
+    └── alert_service.py           # 알림 생성 + 이메일 발송 (check_and_alert, send_email_alerts)
+
+alembic/
+├── env.py
+└── versions/
+    ├── b7c84913beb1_initial_7_tables.py
+    └── 75ef54aaed55_add_missing_parser_fields.py
 ```
 
 ---
@@ -131,25 +153,68 @@ lib/app_name/market/
 
 ---
 
-## 핵심 컨텍스트 함수
+## 핵심 CRUD 함수 (app/crud/stock.py)
 
-```elixir
-# 콘텐츠 생성용 통합 조회
-StockReports.get_report_bundle(ticker)
-# → %{profile, report, financials, key_stats, peers, notes}
+```python
+# UPSERT 함수 — 유니크 제약 기반 INSERT ON CONFLICT UPDATE
+upsert_profile(session, data)          # (ticker, exchange) 유니크
+upsert_report(session, profile_id, data, pdf_path)  # (profile_id, source, report_date) 유니크
+upsert_financial(session, profile_id, data)  # (profile_id, year, quarter, is_estimate) 유니크
+upsert_key_stats(session, report_id, data)   # (stock_report_id) 유니크
+save_peers(session, report_id, peers_list)   # DELETE + INSERT
+save_analyst_notes(session, profile_id, source, notes)  # INSERT
 
-# 템플릿 변수 맵 생성
-StockReports.to_content_vars(ticker)
-# → %{company_name, ticker, recommendation, target_price, upside_pct, ...}
+# 조회 헬퍼
+get_profile_by_ticker(session, ticker)
+get_latest_reports(session, profile_id)
+get_financials(session, profile_id)
+get_all_profiles(session)
+```
 
-# 최신 리포트
-StockReports.get_latest_report(ticker, source: "CFRA")
+### 파싱 → DB 저장 (app/services/parser_service.py)
 
-# 재무 데이터
-StockReports.list_financials(ticker, years: 5, type: :annual)
+```python
+from app.database import SessionLocal
+from app.services.parser_service import parse_and_store
 
-# 피어 비교
-StockReports.list_peers(report_id)
+session = SessionLocal()
+result = parse_and_store("pltr.pdf", "CFRA", session)
+# → {"status": "success", "ticker": "PLTR", "source": "CFRA",
+#    "records_saved": {"profile": 1, "report": 1, "financials": 30, ...}}
+session.close()
+```
+
+### REST API (19개 엔드포인트)
+
+```
+서버 실행: uvicorn app.main:app --port 8000
+Swagger UI: http://localhost:8000/docs
+
+# Stocks API (app/api/stocks.py)
+GET  /api/stocks                      # 전체 종목 목록
+GET  /api/stocks/{ticker}             # 프로필 + 최신 리포트
+GET  /api/stocks/{ticker}/financials  # 재무 데이터 (?period=annual|quarterly|all)
+GET  /api/stocks/{ticker}/compare     # CFRA vs Zacks 비교
+GET  /api/stocks/{ticker}/bundle      # 콘텐츠 변수 맵 (upside_pct 포함)
+GET  /api/stocks/{ticker}/notes       # 애널리스트 노트
+POST /api/parse                       # PDF 업로드 → 파싱 → DB (multipart: file + source)
+
+# Watchlist + Fetch API (app/api/watchlist.py)
+GET  /api/watchlist                   # 워치리스트 조회
+POST /api/watchlist/add               # 티커 추가 (body: ticker, sources)
+POST /api/watchlist/remove            # 티커 제거
+POST /api/fetch/{ticker}              # 단일 PDF 다운로드 (Playwright)
+POST /api/fetch-watchlist             # 워치리스트 일괄 다운로드 + 파싱
+POST /api/parse-local/{ticker}        # 로컬 PDF 파싱 (?source=CFRA)
+
+# Content + Alert API (app/api/content.py)
+GET  /api/content/{ticker}            # 블로그/뉴스레터용 콘텐츠 변수 맵 (30+ 필드)
+GET  /api/diff/{ticker}               # 등급/목표가 변경 감지 (latest vs previous)
+POST /api/alerts/check                # 워치리스트 변경 감지 → 알림 생성
+GET  /api/alerts                      # 미발송 알림 목록
+POST /api/alerts/send                 # 이메일 알림 발송
+
+GET  /health                          # 헬스체크
 ```
 
 ---
@@ -169,46 +234,48 @@ StockReports.list_peers(report_id)
 ## 파일 구조
 
 ```
-Stock_report_automation/
-├── CLAUDE.md                      ← 이 파일 (Claude Code 프로젝트 가이드)
-├── README.md                      ← 프로젝트 개요 + 진행 상황
-├── bkit.config.json               ← ★ bkit (Vibecoding Kit) PDCA 설정
+stock-report-automation/
+├── CLAUDE.md                          ← 이 파일 (Claude Code 프로젝트 가이드)
+├── README.md                          ← 프로젝트 개요 + 진행 상황
+├── bkit.config.json                   ← bkit PDCA 설정
 │
-├── docs/                          ← bkit PDCA 문서 디렉토리
-│   ├── 01-plan/features/          ← Plan 문서
-│   ├── 02-design/features/        ← Design 명세
-│   ├── 03-analysis/features/      ← Gap Analysis
-│   ├── 04-report/features/        ← 완료 리포트
-│   └── archive/                   ← 아카이브
+├── app/                               ← ★ Python 애플리케이션
+│   ├── config.py                      ← pydantic-settings
+│   ├── database.py                    ← SQLAlchemy engine, Base
+│   ├── models/                        ← ORM 모델 7개
+│   ├── crud/stock.py                  ← UPSERT 로직
+│   ├── parsers/__init__.py            ← 파서 re-export
+│   └── services/parser_service.py     ← PDF → DB 오케스트레이터
 │
-├── stock-report-db-design.md      ← DB 스키마 상세 설계 (테이블, 인덱스, 매핑 예시)
-├── stock-report-automation.md     ← 자동화 아키텍처 상세 설계 (포털 분석, 코드 설계)
-├── parsing-validation-report.md   ← 이전 세션 파싱 검증 결과 (DB 스키마 적합성)
-├── parser-accuracy-report.md      ← 파서 정확도 최종 리포트 (100% 달성)
+├── alembic/                           ← DB 마이그레이션
+│   └── versions/                      ← 2개 마이그레이션
 │
-├── cfra_parser.py                 ← ★ CFRA 파서 (Python, pdfplumber 기반)
-├── zacks_parser.py                ← ★ Zacks 파서 (Python, pdfplumber 기반)
-├── validate_all.py                ← 9개 PDF × 170항목 검증 스크립트
+├── cfra_parser.py                     ← ★ CFRA 파서 (pdfplumber 기반)
+├── zacks_parser.py                    ← ★ Zacks 파서 (pdfplumber 기반)
+├── validate_all.py                    ← 9개 PDF × 170항목 검증 스크립트
 │
-├── pltr.pdf                       ← CFRA 샘플 (Palantir, IT/App Software)
-├── MSFT-CFRA.pdf                  ← CFRA (Microsoft, IT/Systems Software)
-├── JNJ-CFRA.pdf                   ← CFRA (J&J, Healthcare/Pharma)
-├── JPM-CFRA.pdf                   ← CFRA (JPMorgan, Financials/Banks)
-├── PG-CFRA.pdf                    ← CFRA (P&G, Consumer Staples)
-├── DHR.pdf                        ← Zacks 샘플 (Danaher, Healthcare/Medical)
-├── AAPL-Zacks.pdf                 ← Zacks (Apple, IT/Computers)
-├── MSFT-Zacks.pdf                 ← Zacks (Microsoft, IT/Software)
-└── JPM-Zacks.pdf                  ← Zacks (JPMorgan, Financials/Banks)
+├── priv/python/                       ← CLI 래퍼 + 파서 복사본
+│   ├── parse_report.py
+│   └── parsers/
+│
+├── docs/                              ← bkit PDCA 문서
+├── stock-report-db-design.md          ← DB 스키마 상세 설계
+├── stock-report-automation.md         ← 자동화 아키텍처 설계
+├── parser-accuracy-report.md          ← 파서 정확도 리포트 (100%)
+├── PRD-stock-report-hub.md            ← 제품 요구사항 정의서
+├── ROADMAP.md                         ← 로드맵
+│
+└── *.pdf                              ← 샘플 PDF 9개 (CFRA 5 + Zacks 4)
 ```
 
 ---
 
-## Python 파서 모듈 (검증 완료, Elixir 연동 대기)
+## Python 파서 모듈 (검증 완료, DB 연동 완료)
 
 ### 의존성
 
-- Python 3.10+, pdfplumber 0.11.9
-- 설치: `pip install pdfplumber`
+- Python 3.10+, pdfplumber, sqlalchemy, psycopg, alembic, pydantic-settings
+- 설치: `pip install pdfplumber sqlalchemy[asyncio] psycopg alembic pydantic-settings`
 
 ### cfra_parser.py — CFRA 리포트 파서
 
@@ -272,19 +339,14 @@ result = parse_zacks("DHR.pdf")
 | stock_peers | N/A | ✅ 7~8개 | 완료 |
 | stock_analyst_notes | ✅ 기본 | N/A | 상세화 P2 |
 
-### Elixir 연동 방식 (추천: Python Port)
+### CLI 래퍼 (priv/python/parse_report.py)
 
-```elixir
-# priv/python/parse_report.py — CLI 래퍼
-# Usage: python3 parse_report.py --source cfra --file pltr.pdf
-# Output: JSON to stdout
+```bash
+# 단일 PDF 파싱 + JSON 출력
+python priv/python/parse_report.py --source cfra --file pltr.pdf
 
-# Elixir에서 호출:
-{output, 0} = System.cmd("python3", [
-  "priv/python/parse_report.py",
-  "--source", source,
-  "--file", pdf_path
-])
+# Elixir 상위 프로젝트에서 호출 시:
+{output, 0} = System.cmd("python3", ["priv/python/parse_report.py", "--source", source, "--file", pdf_path])
 Jason.decode!(output)
 ```
 
@@ -372,15 +434,15 @@ export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1
 ## 코드 생성 시 규칙
 
 1. **레퍼런스 먼저**: 코드 작성 전 반드시 `stock-report-db-design.md`와 `stock-report-automation.md`를 읽고 시작
-2. **파서 참조**: `cfra_parser.py`, `zacks_parser.py`의 출력 구조를 기준으로 Elixir 스키마/컨텍스트 코드 생성
-3. **소스별 파서 분리**: CFRA/Zacks 파서는 별도 모듈, 공통 인터페이스(`parse/2`)로 통일
-4. **UPSERT 패턴**: 동일 종목+소스+날짜 리포트는 덮어쓰기 (유니크 제약 기반)
-5. **멀티테넌시**: 모든 테이블에 `organization_id` FK 포함
-6. **Oban으로 부작용 분리**: PDF 다운로드, 파싱, 알림은 반드시 Oban 워커
-7. **Python 의존성 격리**: pdfplumber/playwright는 `System.cmd`로 호출, venv 사용 권장
-8. **환경변수**: API 키, 다운로드 경로 등은 `runtime.exs`에서 읽음
-9. **PDF 샘플 참조**: 파서 개발 시 9개 PDF 파일을 실제 테스트 데이터로 활용
-10. **검증 스크립트**: `validate_all.py`로 파서 수정 후 회귀 테스트 실행
+2. **파서 참조**: `cfra_parser.py`, `zacks_parser.py`의 출력 구조를 기준으로 ORM 모델/CRUD 코드 생성
+3. **소스별 파서 분리**: CFRA/Zacks 파서는 별도 모듈, 공통 인터페이스(`parse(pdf_path)`)로 통일
+4. **UPSERT 패턴**: 동일 종목+소스+날짜 리포트는 덮어쓰기 (유니크 제약 기반, `INSERT ON CONFLICT DO UPDATE`)
+5. **멀티테넌시**: 모든 테이블에 `organization_id` 컬럼 포함
+6. **환경변수**: DB URL, PDF 경로 등은 `.env` + `pydantic-settings`로 관리
+7. **마이그레이션**: 스키마 변경 시 Alembic으로 마이그레이션 생성 (`alembic revision --autogenerate`)
+8. **PDF 샘플 참조**: 파서 개발 시 9개 PDF 파일을 실제 테스트 데이터로 활용
+9. **검증 스크립트**: `validate_all.py`로 파서 수정 후 회귀 테스트 실행
+10. **CRUD ↔ 파서 동기화**: 파서 출력 필드 추가 시 `app/crud/stock.py` 매핑도 함께 업데이트
 
 ---
 
@@ -393,13 +455,37 @@ export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1
 - ✅ 9개 PDF 수집 완료 (CFRA 5 + Zacks 4, 4개 섹터)
 - ✅ Python 파서 2종 개발 완료 (cfra_parser.py, zacks_parser.py)
 - ✅ 정확도 검증 100% 달성 (170개 항목)
-- ⬜ **다음 단계**: Elixir Python Port 연동 + Oban Worker + DB 마이그레이션
+- ✅ SQLAlchemy ORM 모델 7개 구현 완료
+- ✅ Alembic 마이그레이션 생성 완료 (초기 7테이블 + 파서 필드 추가)
+- ✅ CRUD UPSERT 로직 구현 완료 (app/crud/stock.py)
+- ✅ Parser Service 오케스트레이터 구현 완료 (app/services/parser_service.py)
+- ✅ 파서-DB 필드 불일치 해소 완료 (zacks_rank_label, quality_ranking, oper_eps 등)
+- ✅ E2E 파이프라인 테스트 통과 (11/11 PDF → DB 저장 성공)
+- ✅ DB 데이터 적재: 8종목, 11리포트, 206 financials, 58 balance_sheets, 42 notes
+- ✅ FastAPI REST API 8개 엔드포인트 구현 + 테스트 완료 (2026-03-02)
+- ✅ Pydantic 응답 스키마 구현 완료
+- ✅ Phase 2 완료 (2026-03-02): 데이터 품질 강화
+  - Zacks revenue+EPS 병합 버그 수정 (fiscal_quarter NULL → 0)
+  - CFRA Balance Sheet 파싱 → DB 저장 연결 (58건)
+  - Analyst Notes 중복 방지 (delete+insert 패턴)
+  - UPSERT 멱등성 테스트 PASS (2회 실행 → 전 테이블 동일)
+  - 파서 회귀: 99.4% (170항목, 164 PASS / 1 FAIL / 5 WARN)
+- ✅ Phase 3 완료 (2026-03-02): 자동 수집 파이프라인
+  - Watchlist 모델 + CRUD (add/remove/list/get_fetch_targets)
+  - Playwright headless fetcher (fetch_pdf, batch_fetch)
+  - APScheduler 정기 수집 (매일 7AM, settings.scheduler_enabled 제어)
+  - Watchlist + Fetch API 6개 엔드포인트 (GET/POST watchlist, fetch, parse-local)
+  - parse-local: 다양한 PDF 이름 패턴 자동 탐색 (BASE_DIR 기준)
+  - Playwright 미설치 시 graceful error 반환
+- ✅ Phase 4 완료 (2026-03-02): 콘텐츠 파이프라인 + 알림
+  - content_service: to_content_vars (30+ 필드, revenue_trend, multi-source consensus)
+  - content_service: detect_changes (latest vs previous report diff, 5개 핵심 필드)
+  - alert_service: check_and_alert, send_email_alerts (SMTP 지원)
+  - Alert 모델 + Alembic 마이그레이션 (alerts 테이블)
+  - Content + Alert API 5개 엔드포인트 (content, diff, alerts/check, alerts, alerts/send)
+  - Fetcher 셀렉터 수정 (실제 포탈 #selectFirm, #symbolLookupInput, span.searchButton)
+  - E2E: Playwright → PDF 다운로드 → 파싱 → DB 저장 → 변경 감지 → 알림 생성 전체 동작
 
-### 다음 단계 상세 (Claude Code 작업)
+### 전체 API 엔드포인트 (19개)
 
-1. `priv/python/` 디렉토리에 파서 CLI 래퍼 생성 (parse_report.py)
-2. Ecto 마이그레이션 7개 테이블 생성
-3. Ecto 스키마 7개 모듈 구현
-4. `stock_reports.ex` 컨텍스트 모듈 — UPSERT 로직
-5. `report_parse_worker.ex` Oban 워커 — Python 파서 호출 + DB 저장
-6. P2: EPS merge, Balance Sheet 파싱, Zacks Financials 추가
+Phase 1-4 전체 API는 위의 "REST API (14+5 = 19개 엔드포인트)" 섹션 참조.
