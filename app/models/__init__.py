@@ -8,6 +8,7 @@ from app.models.stock_peer import StockPeer
 from app.models.stock_analyst_note import StockAnalystNote
 from app.models.watchlist import Watchlist, WatchlistItem
 from app.models.alert import Alert
+from app.models.api_key import ApiKey
 
 __all__ = [
     "Base",
@@ -21,4 +22,5 @@ __all__ = [
     "Watchlist",
     "WatchlistItem",
     "Alert",
+    "ApiKey",
 ]

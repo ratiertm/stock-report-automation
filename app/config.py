@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = False
     scheduler_cron_hour: int = 7
     log_level: str = "INFO"
+    admin_api_key: str = ""
     # Alert settings
     alert_email_to: str = ""
     alert_smtp_host: str = "localhost"
