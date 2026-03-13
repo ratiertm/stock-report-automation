@@ -1,66 +1,107 @@
-"""Parser Service: orchestrates PDF parsing → DB storage."""
+"""Parser Service: orchestrates PDF parsing → DB storage.
 
+Default: LLM parser (Claude API with PDF direct upload).
+Fallback: Regex parser (pdfplumber) when source has _REGEX suffix or LLM fails.
+"""
+
+import logging
 import os
 from dataclasses import asdict
 
 from sqlalchemy.orm import Session
 
-from app.parsers import CFRAParser, ZacksParser
+from app.parsers import CFRAParser, ZacksParser, CFRALLMParser, ZacksLLMParser
 from app.crud.stock import (
     upsert_profile, upsert_report, upsert_financial, upsert_balance_sheet,
     upsert_key_stats, save_peers, save_analyst_notes,
 )
 
+logger = logging.getLogger(__name__)
 
-def parse_and_store(pdf_path: str, source: str, session: Session) -> dict:
+
+def _parse_cfra(pdf_path: str, use_llm: bool) -> tuple[dict, list, list]:
+    """Parse CFRA PDF. Returns (data, errors, warnings)."""
+    parser = CFRALLMParser() if use_llm else CFRAParser()
+    result = parser.parse(pdf_path)
+    data = {
+        "profile": asdict(result.profile),
+        "report": asdict(result.report),
+        "key_stats": asdict(result.key_stats),
+        "financials": [asdict(f) for f in result.financials],
+        "analyst_notes": [asdict(n) for n in result.analyst_notes],
+        "balance_sheets": [asdict(b) for b in result.balance_sheets],
+        "peers": [],
+    }
+    return data, result.errors, result.warnings
+
+
+def _parse_zacks(pdf_path: str, use_llm: bool) -> tuple[dict, list, list]:
+    """Parse Zacks PDF. Returns (data, errors, warnings)."""
+    parser = ZacksLLMParser() if use_llm else ZacksParser()
+    result = parser.parse(pdf_path)
+    data = {
+        "profile": asdict(result.profile),
+        "report": asdict(result.report),
+        "key_stats": asdict(result.key_stats),
+        "financials": [asdict(f) for f in result.financials],
+        "peers": [asdict(p) for p in result.peers],
+        "analyst_notes": [],
+        "balance_sheets": [],
+    }
+    return data, result.errors, result.warnings
+
+
+def parse_and_store(pdf_path: str, source: str, session: Session, ticker_hint: str = None) -> dict:
     """Parse a PDF and store all extracted data in the database.
 
     Args:
         pdf_path: Path to the PDF file
-        source: "CFRA" or "Zacks"
+        source: "CFRA" or "Zacks" (LLM default), append "_REGEX" for regex parser
         session: SQLAlchemy session
+        ticker_hint: Optional ticker to use if parser fails to extract one
 
     Returns:
         dict with ticker, source, counts, errors, warnings
     """
     source = source.upper()
 
+    # Determine parser mode: LLM (default) or regex (explicit _REGEX suffix)
+    use_llm = True
+    if source.endswith("_REGEX"):
+        use_llm = False
+        source = source.replace("_REGEX", "")
+
     # 1. Parse
     if source == "CFRA":
-        parser = CFRAParser()
-        result = parser.parse(pdf_path)
-        data = {
-            "profile": asdict(result.profile),
-            "report": asdict(result.report),
-            "key_stats": asdict(result.key_stats),
-            "financials": [asdict(f) for f in result.financials],
-            "analyst_notes": [asdict(n) for n in result.analyst_notes],
-            "balance_sheets": [asdict(b) for b in result.balance_sheets],
-            "peers": [],
-        }
-        errors = result.errors
-        warnings = result.warnings
+        data, errors, warnings = _parse_cfra(pdf_path, use_llm)
+
+        # Fallback to regex if LLM fails
+        if errors and use_llm:
+            logger.warning("LLM parser failed for CFRA, falling back to regex: %s", errors[0])
+            data, errors, warnings = _parse_cfra(pdf_path, use_llm=False)
+            warnings.append("LLM failed, used regex fallback")
+
+        source = "CFRA"
     elif source == "ZACKS":
-        parser = ZacksParser()
-        result = parser.parse(pdf_path)
-        data = {
-            "profile": asdict(result.profile),
-            "report": asdict(result.report),
-            "key_stats": asdict(result.key_stats),
-            "financials": [asdict(f) for f in result.financials],
-            "peers": [asdict(p) for p in result.peers],
-            "analyst_notes": [],
-            "balance_sheets": [],
-        }
-        errors = result.errors
-        warnings = result.warnings
+        data, errors, warnings = _parse_zacks(pdf_path, use_llm)
+
+        # Fallback to regex if LLM fails
+        if errors and use_llm:
+            logger.warning("LLM parser failed for Zacks, falling back to regex: %s", errors[0])
+            data, errors, warnings = _parse_zacks(pdf_path, use_llm=False)
+            warnings.append("LLM failed, used regex fallback")
+
+        source = "Zacks"
     else:
         return {"error": f"Unknown source: {source}"}
 
     if errors:
         return {"error": errors[0], "errors": errors, "warnings": warnings}
 
-    ticker = data["profile"].get("ticker", "UNKNOWN")
+    ticker = data["profile"].get("ticker") or ticker_hint or "UNKNOWN"
+    # Ensure profile has ticker (LLM sometimes returns null)
+    if not data["profile"].get("ticker") and ticker_hint:
+        data["profile"]["ticker"] = ticker_hint
 
     # 2. Upsert profile
     profile = upsert_profile(session, data["profile"])

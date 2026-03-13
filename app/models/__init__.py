@@ -10,8 +10,16 @@ from app.models.watchlist import Watchlist, WatchlistItem
 from app.models.alert import Alert
 from app.models.api_key import ApiKey
 
+# v2 schema models
+from app.models.v2 import (
+    Company, Report, ReportRating, ReportKeyStat, ReportTextSection,
+    Financial, BalanceSheet, IncomeStatement, PerShareDatum,
+    ConsensusEstimate, AnalystNote, PeerComparison, CompanyEvent,
+)
+
 __all__ = [
     "Base",
+    # v1 models
     "StockProfile",
     "StockReport",
     "StockFinancial",
@@ -23,4 +31,18 @@ __all__ = [
     "WatchlistItem",
     "Alert",
     "ApiKey",
+    # v2 models
+    "Company",
+    "Report",
+    "ReportRating",
+    "ReportKeyStat",
+    "ReportTextSection",
+    "Financial",
+    "BalanceSheet",
+    "IncomeStatement",
+    "PerShareDatum",
+    "ConsensusEstimate",
+    "AnalystNote",
+    "PeerComparison",
+    "CompanyEvent",
 ]

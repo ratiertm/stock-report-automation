@@ -237,35 +237,69 @@ GET  /health                          # 헬스체크
 stock-report-automation/
 ├── CLAUDE.md                          ← 이 파일 (Claude Code 프로젝트 가이드)
 ├── README.md                          ← 프로젝트 개요 + 진행 상황
-├── bkit.config.json                   ← bkit PDCA 설정
-│
-├── app/                               ← ★ Python 애플리케이션
-│   ├── config.py                      ← pydantic-settings
-│   ├── database.py                    ← SQLAlchemy engine, Base
-│   ├── models/                        ← ORM 모델 7개
-│   ├── crud/stock.py                  ← UPSERT 로직
-│   ├── parsers/__init__.py            ← 파서 re-export
-│   └── services/parser_service.py     ← PDF → DB 오케스트레이터
-│
-├── alembic/                           ← DB 마이그레이션
-│   └── versions/                      ← 2개 마이그레이션
-│
-├── cfra_parser.py                     ← ★ CFRA 파서 (pdfplumber 기반)
-├── zacks_parser.py                    ← ★ Zacks 파서 (pdfplumber 기반)
-├── validate_all.py                    ← 9개 PDF × 170항목 검증 스크립트
-│
-├── priv/python/                       ← CLI 래퍼 + 파서 복사본
-│   ├── parse_report.py
-│   └── parsers/
-│
-├── docs/                              ← bkit PDCA 문서
-├── stock-report-db-design.md          ← DB 스키마 상세 설계
-├── stock-report-automation.md         ← 자동화 아키텍처 설계
-├── parser-accuracy-report.md          ← 파서 정확도 리포트 (100%)
 ├── PRD-stock-report-hub.md            ← 제품 요구사항 정의서
 ├── ROADMAP.md                         ← 로드맵
+├── stock-report-db-design.md          ← DB 스키마 상세 설계
+├── stock-report-automation.md         ← 자동화 아키텍처 설계
 │
-└── *.pdf                              ← 샘플 PDF 9개 (CFRA 5 + Zacks 4)
+├── app/                               ← ★ Python 애플리케이션 (FastAPI)
+│   ├── main.py                        ← FastAPI 엔트리포인트
+│   ├── config.py                      ← pydantic-settings (.env 기반)
+│   ├── database.py                    ← SQLAlchemy engine, SessionLocal, Base
+│   ├── models/                        ← ORM 모델 (v1: 10 테이블, v2: 13 테이블)
+│   ├── schemas/                       ← Pydantic 응답 스키마
+│   ├── api/                           ← REST API 라우터 (stocks, watchlist, content, auth)
+│   ├── crud/                          ← UPSERT 로직 (stock.py, watchlist.py, api_key.py)
+│   ├── parsers/__init__.py            ← 파서 re-export (CFRA/Zacks × Regex/LLM)
+│   └── services/                      ← 비즈니스 로직
+│       ├── parser_service.py          ← PDF → DB 오케스트레이터 (LLM default, regex fallback)
+│       ├── fetcher_service.py         ← Playwright PDF 다운로드
+│       ├── content_service.py         ← 콘텐츠 변수 맵 + 변경 감지
+│       ├── alert_service.py           ← 알림 생성 + 이메일 발송
+│       └── scheduler.py              ← APScheduler 정기 수집
+│
+├── cfra_parser.py                     ← CFRA Regex 파서 (pdfplumber 기반)
+├── zacks_parser.py                    ← Zacks Regex 파서 (pdfplumber 기반)
+├── llm_parser.py                      ← ★ LLM 파서 (Claude API, PDF 직접 전송)
+├── validate_all.py                    ← Regex 파서 검증 스크립트
+│
+├── batch_llm_parse.py                 ← ★ 배치 파싱 스크립트 (inventory 기반, resumable)
+├── build_pdf_inventory.py             ← PDF 인벤토리 생성 (storage 스캔 → JSON)
+│
+├── alembic/                           ← DB 마이그레이션
+│   └── versions/                      ← 마이그레이션 파일들
+│
+├── storage/                           ← PDF 저장소 (gitignored)
+│   └── pdfs/
+│       ├── 2026-03-02/                ← 날짜별 다운로드 폴더
+│       ├── 2026-03-03/
+│       ├── 2026-03-05/                ← (239 PDFs)
+│       ├── 2026-03-06/                ← (206 PDFs)
+│       ├── 2026-03-07/                ← (159 PDFs)
+│       ├── 2026-03-08/                ← (392 PDFs)
+│       └── legacy/                    ← 초기 샘플 PDF 11개
+│
+├── scripts/                           ← 유틸리티 스크립트
+│   ├── stealth_download_r*.py         ← Fidelity 포털 PDF 다운로드 (iteration 1~5)
+│   ├── batch_download.py              ← 배치 다운로드
+│   ├── test_llm_parser.py             ← LLM 파서 테스트
+│   ├── run_*_test*.py                 ← 각종 테스트 스크립트
+│   └── tickers_*.txt                  ← 티커 목록 (S&P 500, NASDAQ 100, 전체)
+│
+├── logs/                              ← 배치 실행 로그 (gitignored)
+├── docs/                              ← bkit PDCA 문서 + 리포트
+│   ├── 01-plan/                       ← Plan 문서
+│   ├── 02-design/                     ← Design 명세
+│   ├── reports/                       ← 파서 정확도 리포트, 세션 로그
+│   └── database-architecture-review.md
+├── priv/python/                       ← Elixir 연동용 CLI 래퍼
+│
+├── pdf_inventory.json                 ← PDF 인벤토리 (gitignored, regenerable)
+├── bkit.config.json                   ← bkit PDCA 설정
+├── alembic.ini                        ← Alembic 설정
+├── requirements.txt                   ← Python 의존성
+├── docker-compose.yml                 ← PostgreSQL Docker 설정
+└── .env                               ← 환경변수 (gitignored)
 ```
 
 ---
@@ -448,44 +482,36 @@ export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1
 
 ## 현재 상태
 
-- ✅ Fidelity Research 포털 구조 분석 완료
-- ✅ Chrome MCP 검색 플로우 테스트 완료
-- ✅ DB 스키마 7테이블 설계 완료 (CFRA + Zacks 호환)
-- ✅ 자동화 아키텍처 3방안 설계 완료
-- ✅ 9개 PDF 수집 완료 (CFRA 5 + Zacks 4, 4개 섹터)
-- ✅ Python 파서 2종 개발 완료 (cfra_parser.py, zacks_parser.py)
-- ✅ 정확도 검증 100% 달성 (170개 항목)
-- ✅ SQLAlchemy ORM 모델 7개 구현 완료
-- ✅ Alembic 마이그레이션 생성 완료 (초기 7테이블 + 파서 필드 추가)
-- ✅ CRUD UPSERT 로직 구현 완료 (app/crud/stock.py)
-- ✅ Parser Service 오케스트레이터 구현 완료 (app/services/parser_service.py)
-- ✅ 파서-DB 필드 불일치 해소 완료 (zacks_rank_label, quality_ranking, oper_eps 등)
-- ✅ E2E 파이프라인 테스트 통과 (11/11 PDF → DB 저장 성공)
-- ✅ DB 데이터 적재: 8종목, 11리포트, 206 financials, 58 balance_sheets, 42 notes
-- ✅ FastAPI REST API 8개 엔드포인트 구현 + 테스트 완료 (2026-03-02)
-- ✅ Pydantic 응답 스키마 구현 완료
-- ✅ Phase 2 완료 (2026-03-02): 데이터 품질 강화
-  - Zacks revenue+EPS 병합 버그 수정 (fiscal_quarter NULL → 0)
-  - CFRA Balance Sheet 파싱 → DB 저장 연결 (58건)
-  - Analyst Notes 중복 방지 (delete+insert 패턴)
-  - UPSERT 멱등성 테스트 PASS (2회 실행 → 전 테이블 동일)
-  - 파서 회귀: 99.4% (170항목, 164 PASS / 1 FAIL / 5 WARN)
-- ✅ Phase 3 완료 (2026-03-02): 자동 수집 파이프라인
-  - Watchlist 모델 + CRUD (add/remove/list/get_fetch_targets)
-  - Playwright headless fetcher (fetch_pdf, batch_fetch)
-  - APScheduler 정기 수집 (매일 7AM, settings.scheduler_enabled 제어)
-  - Watchlist + Fetch API 6개 엔드포인트 (GET/POST watchlist, fetch, parse-local)
-  - parse-local: 다양한 PDF 이름 패턴 자동 탐색 (BASE_DIR 기준)
-  - Playwright 미설치 시 graceful error 반환
-- ✅ Phase 4 완료 (2026-03-02): 콘텐츠 파이프라인 + 알림
-  - content_service: to_content_vars (30+ 필드, revenue_trend, multi-source consensus)
-  - content_service: detect_changes (latest vs previous report diff, 5개 핵심 필드)
-  - alert_service: check_and_alert, send_email_alerts (SMTP 지원)
-  - Alert 모델 + Alembic 마이그레이션 (alerts 테이블)
-  - Content + Alert API 5개 엔드포인트 (content, diff, alerts/check, alerts, alerts/send)
-  - Fetcher 셀렉터 수정 (실제 포탈 #selectFirm, #symbolLookupInput, span.searchButton)
-  - E2E: Playwright → PDF 다운로드 → 파싱 → DB 저장 → 변경 감지 → 알림 생성 전체 동작
+### 데이터 현황 (2026-03-10)
+
+| 항목 | 수량 |
+|------|------|
+| PDF 수집 | 1,017개 (CFRA 511 + Zacks 506) |
+| 유니크 티커 | 513개 |
+| DB 적재 완료 | 466개 (238 profiles, 466 reports) |
+| DB 미적재 | 551개 (3/7, 3/8 다운로드분) |
+| 파서 | LLM (Claude API, default) + Regex (pdfplumber, fallback) |
+
+### 완료된 Phase
+
+- ✅ **Phase 1** (MVP): Regex 파서 2종 개발, 정확도 100% (170항목)
+- ✅ **Phase 2** (데이터 품질): UPSERT 멱등성, Balance Sheet/Analyst Notes 연결
+- ✅ **Phase 3** (자동 수집): Watchlist + Playwright fetcher + APScheduler
+- ✅ **Phase 4** (콘텐츠): content_service, alert_service, 19개 API 엔드포인트
+- ✅ **Phase 5** (LLM 파서): Claude API 기반 PDF 직접 파싱, regex fallback 자동 전환
+- ✅ **Phase 6** (대량 수집): stealth_download (r1~r5), 1,017 PDF 수집 완료
+- ✅ **Phase 7** (배치 적재): batch_llm_parse.py, pdf_inventory.json 기반 resumable 파싱
+
+### 주요 배치 스크립트
+
+```bash
+# PDF 인벤토리 재생성 (storage/pdfs/ 스캔 → pdf_inventory.json)
+python build_pdf_inventory.py
+
+# 미적재 PDF 일괄 파싱 → DB (resumable, inventory 자동 업데이트)
+python batch_llm_parse.py [--limit N] [--source CFRA|Zacks] [--date 2026-03-07] [--dry-run]
+```
 
 ### 전체 API 엔드포인트 (19개)
 
-Phase 1-4 전체 API는 위의 "REST API (14+5 = 19개 엔드포인트)" 섹션 참조.
+Phase 1-4 전체 API는 위의 "REST API (19개 엔드포인트)" 섹션 참조.

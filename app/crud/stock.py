@@ -64,6 +64,7 @@ def upsert_profile(session: Session, data: dict) -> StockProfile:
     if exchange == "UNKNOWN":
         existing = session.execute(
             select(StockProfile).where(StockProfile.ticker == ticker)
+            .order_by(StockProfile.id.asc()).limit(1)
         ).scalar_one_or_none()
         if existing:
             exchange = existing.exchange

@@ -111,8 +111,9 @@ def parse_pdf(
     db: Session = Depends(get_db),
 ):
     source = source.upper()
-    if source not in ("CFRA", "ZACKS"):
-        raise HTTPException(400, f"Invalid source: {source}. Use CFRA or ZACKS.")
+    valid = ("CFRA", "ZACKS", "CFRA_REGEX", "ZACKS_REGEX")
+    if source not in valid:
+        raise HTTPException(400, f"Invalid source: {source}. Use CFRA or ZACKS (append _REGEX for regex parser).")
 
     # Save uploaded file to temp
     suffix = os.path.splitext(file.filename or "report.pdf")[1] or ".pdf"

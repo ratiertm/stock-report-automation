@@ -6,5 +6,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from cfra_parser import CFRAParser, parse_cfra
 from zacks_parser import ZacksParser, parse_zacks
+from llm_parser import CFRALLMParser, ZacksLLMParser, parse_cfra_llm, parse_zacks_llm
 
-__all__ = ["CFRAParser", "parse_cfra", "ZacksParser", "parse_zacks"]
+__all__ = [
+    "CFRAParser", "parse_cfra", "ZacksParser", "parse_zacks",
+    "CFRALLMParser", "ZacksLLMParser", "parse_cfra_llm", "parse_zacks_llm",
+]

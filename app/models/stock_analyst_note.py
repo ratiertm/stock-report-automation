@@ -15,7 +15,7 @@ class StockAnalystNote(Base):
     source = Column(String(50))
     published_at = Column(DateTime)
     analyst_name = Column(String(100))
-    title = Column(String(500))
+    title = Column(Text)
     stock_price_at_note = Column(Numeric(12, 2))
     action = Column(String(50))
     target_price = Column(Numeric(12, 2))
